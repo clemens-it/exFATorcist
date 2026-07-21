@@ -8,35 +8,37 @@ MAX_LABEL_LEN=11
 REQUIRED_COMMANDS="basename cat cut tr wc id lsblk umount blkdiscard wipefs dd parted partprobe mkfs.exfat sleep"
 
 usage() {
-    echo "Usage: $0 [--default-label] /dev/sdX" >&2
-    echo >&2
-    echo "Formats a whole USB-style block device as exFAT for Windows-compatible use." >&2
-    echo >&2
-    echo "What this script does:" >&2
-    echo "  - refuses to operate on sda" >&2
-    echo "  - checks that required commands are installed" >&2
-    echo "  - requires root privileges, except for this help output" >&2
-    echo "  - shows the current device layout with lsblk" >&2
-    echo "  - asks for explicit confirmation before destroying data" >&2
-    echo "  - unmounts existing partitions on the target device" >&2
-    echo "  - uses blkdiscard if supported, otherwise wipefs plus zeroing the first 16 MiB" >&2
-    echo "  - creates a new MBR/msdos partition table" >&2
-    echo "  - creates one partition spanning the device" >&2
-    echo "  - formats that partition as exFAT" >&2
-    echo >&2
-    echo "Label handling:" >&2
-    echo "  - by default, the script asks interactively for a volume label" >&2
-    echo "  - pressing Enter uses the default label: $DEFAULT_LABEL" >&2
-    echo "  - entering one single space creates the filesystem without a label" >&2
-    echo "  - labels longer than $MAX_LABEL_LEN characters are truncated with a warning" >&2
-    echo >&2
-    echo "Options:" >&2
-    echo "  --default-label   Do not ask for a label; use '$DEFAULT_LABEL'" >&2
-    echo "  -h, --help        Show this help" >&2
-    echo >&2
-    echo "Examples:" >&2
-    echo "  $0 /dev/sdb" >&2
-    echo "  $0 --default-label /dev/sdb" >&2
+    cat <<EOF >&2
+Usage: $0 [--default-label] /dev/sdX
+
+Formats a whole USB-style block device as exFAT for Windows-compatible use.
+
+What this script does:
+  - refuses to operate on sda
+  - checks that required commands are installed
+  - requires root privileges, except for this help output
+  - shows the current device layout with lsblk
+  - asks for explicit confirmation before destroying data
+  - unmounts existing partitions on the target device
+  - uses blkdiscard if supported, otherwise wipefs plus zeroing the first 16 MiB
+  - creates a new MBR/msdos partition table
+  - creates one partition spanning the device
+  - formats that partition as exFAT
+
+Label handling:
+  - by default, the script asks interactively for a volume label
+  - pressing Enter uses the default label: $DEFAULT_LABEL
+  - entering one single space creates the filesystem without a label
+  - labels longer than $MAX_LABEL_LEN characters are truncated with a warning
+
+Options:
+  --default-label   Do not ask for a label; use '$DEFAULT_LABEL'
+  -h, --help        Show this help
+
+Examples:
+  $0 /dev/sdb
+  $0 --default-label /dev/sdb
+EOF
 }
 
 missing_commands=""
