@@ -1,0 +1,11 @@
+[Unit]
+Description=USB Exorcist watcher
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/usb-exorcist-watch
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

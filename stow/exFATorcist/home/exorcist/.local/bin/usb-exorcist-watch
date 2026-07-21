@@ -1,0 +1,65 @@
+#!/bin/sh
+set -eu
+
+FORMATTER="/usr/local/sbin/exFATorcist"
+TTY="/dev/tty1"
+LOCK="/tmp/usb-exorcist.lock"
+
+for cmd in udevadm flock sed grep sudo; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+        echo "$cmd not found" >&2
+        exit 1
+    fi
+done
+
+run_formatter() {
+    dev="$1"
+
+    {
+        echo
+        echo "USB Exorcist detected: $dev"
+        echo
+        sudo "$FORMATTER" "$dev"
+        echo
+        echo "Press Enter to return to watcher..."
+        read -r _
+    } < "$TTY" > "$TTY" 2>&1
+}
+
+udevadm monitor --udev --subsystem-match=block |
+while IFS= read -r line; do
+    case "$line" in
+        *" add "*) ;;
+        *) continue ;;
+    esac
+
+    DEVNAME="$(printf "%s\n" "$line" | sed -n 's#.*block/\(sd[a-z][a-z]*\)$#\1#p')"
+
+    [ -n "${DEVNAME:-}" ] || continue
+
+    DEV="/dev/$DEVNAME"
+
+    case "$DEV" in
+        /dev/sda)
+            continue
+            ;;
+        /dev/sd[a-z]|/dev/sd[a-z][a-z])
+            ;;
+        *)
+            continue
+            ;;
+    esac
+
+    [ -b "$DEV" ] || continue
+
+    if ! udevadm info --query=property --name="$DEV" | grep -q '^ID_BUS=usb$'; then
+        continue
+    fi
+
+    if flock -n "$LOCK" true; then
+        (
+            flock -x 9
+            run_formatter "$DEV"
+        ) 9>"$LOCK"
+    fi
+done
