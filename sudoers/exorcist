@@ -1,0 +1,2 @@
+exorcist ALL=(root) NOPASSWD: /usr/local/sbin/exFATorcist /dev/sd[a-z], /usr/local/sbin/exFATorcist --default-label /dev/sd[a-z]
+exorcist ALL=(root) NOPASSWD: /usr/local/sbin/exFATorcist /dev/sd[a-z][a-z], /usr/local/sbin/exFATorcist --default-label /dev/sd[a-z][a-z]
