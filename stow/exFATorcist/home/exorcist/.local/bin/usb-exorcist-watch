@@ -33,7 +33,7 @@ while IFS= read -r line; do
         *) continue ;;
     esac
 
-    DEVNAME="$(printf "%s\n" "$line" | sed -n 's#.*block/\(sd[a-z][a-z]*\)$#\1#p')"
+    DEVNAME="$(printf "%s\n" "$line" | sed -n 's#.*block/\(sd[a-z][a-z]*\)\([[:space:]].*\)\{0,1\}$#\1#p')"
 
     [ -n "${DEVNAME:-}" ] || continue
 
