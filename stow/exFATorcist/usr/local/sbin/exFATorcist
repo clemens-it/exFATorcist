@@ -5,6 +5,7 @@ DEFAULT_LABEL="USB-Stick"
 ASK_LABEL=1
 MAX_LABEL_LEN=11
 
+# Keep the dependency list visible; this script should fail before touching a disk.
 REQUIRED_COMMANDS="basename cat cut tr wc id lsblk umount blkdiscard wipefs dd parted partprobe mkfs.exfat sleep"
 
 usage() {
@@ -41,6 +42,7 @@ Examples:
 EOF
 }
 
+# Collect all missing commands so the user gets one actionable error.
 missing_commands=""
 
 for cmd in $REQUIRED_COMMANDS; do
@@ -56,6 +58,7 @@ if [ -n "$missing_commands" ]; then
     exit 1
 fi
 
+# Parse options first; everything after this should identify exactly one device.
 if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
     usage
     exit 1
@@ -77,6 +80,7 @@ if [ "$#" -ne 1 ]; then
     exit 1
 fi
 
+# The operations below are destructive and require direct block-device access.
 if [ "$(id -u)" -ne 0 ]; then
     echo "Error: this script must be run as root." >&2
     echo "Run it like this:" >&2
@@ -87,16 +91,19 @@ fi
 DEV="$1"
 BASE="$(basename "$DEV")"
 
+# Keep the common internal system disk name out of scope even for root.
 if [ "$BASE" = "sda" ]; then
     echo "Refusing to operate on sda" >&2
     exit 1
 fi
 
+# Require a current block device before accepting any path pattern.
 if [ ! -b "$DEV" ]; then
     echo "Error: $DEV is not a block device" >&2
     exit 1
 fi
 
+# Only whole /dev/sdX-style disks are supported; partitions are rejected.
 case "$DEV" in
     /dev/sd[a-z]|/dev/sd[a-z][a-z]|sd[a-z]|sd[a-z][a-z]|./sd[a-z]|./sd[a-z][a-z]|../sd[a-z]|../sd[a-z][a-z])
         ;;
@@ -111,6 +118,7 @@ esac
 LABEL="$DEFAULT_LABEL"
 NO_LABEL=0
 
+# Interactive label entry keeps normal use flexible while preserving a fast default.
 if [ "$ASK_LABEL" -eq 1 ]; then
     echo
     echo "Enter partition label, max. $MAX_LABEL_LEN characters."
@@ -128,6 +136,7 @@ if [ "$ASK_LABEL" -eq 1 ]; then
     fi
 fi
 
+# exFAT labels are short; truncate here instead of letting mkfs fail later.
 if [ "$NO_LABEL" -eq 0 ]; then
     LABEL_LEN="$(printf "%s" "$LABEL" | wc -m | tr -d ' ')"
 
@@ -139,6 +148,7 @@ if [ "$NO_LABEL" -eq 0 ]; then
     fi
 fi
 
+# Show the selected device and label before the final destructive prompt.
 echo "Target device: $DEV"
 
 if [ "$NO_LABEL" -eq 1 ]; then
@@ -150,6 +160,7 @@ fi
 echo "Detected layout:"
 lsblk -o NAME,SIZE,TYPE,FSTYPE,LABEL,MODEL,MOUNTPOINTS "$DEV"
 
+# Require an exact confirmation after showing the current disk layout.
 echo
 echo "WARNING: all data on $DEV will be destroyed."
 printf "Type YES to continue: "
@@ -160,6 +171,7 @@ if [ "$answer" != "YES" ]; then
     exit 1
 fi
 
+# Unmount any existing partitions so wipe/partition/format operations can proceed.
 echo "Unmounting partitions..."
 for part in "$DEV"?*; do
     if [ -b "$part" ]; then
@@ -169,6 +181,7 @@ done
 
 DISCARD_MAX="/sys/block/$BASE/queue/discard_max_bytes"
 
+# Prefer device discard when available; otherwise wipe signatures and the first 16 MiB.
 if [ -r "$DISCARD_MAX" ] && [ "$(cat "$DISCARD_MAX")" != "0" ]; then
     echo "Discard supported; running blkdiscard..."
     blkdiscard -v "$DEV"
@@ -178,6 +191,7 @@ else
     dd if=/dev/zero of="$DEV" bs=1M count=16 status=progress conv=fsync
 fi
 
+# Build a simple Windows-compatible MBR layout with one aligned primary partition.
 echo "Creating MBR partition table..."
 parted -s "$DEV" mklabel msdos
 parted -s -a optimal "$DEV" mkpart primary 1MiB 100%
@@ -185,6 +199,7 @@ partprobe "$DEV"
 
 PART="${DEV}1"
 
+# Give udev/kernel a short window to expose the new partition node.
 i=0
 while [ ! -b "$PART" ] && [ "$i" -lt 10 ]; do
     sleep 1
@@ -196,6 +211,7 @@ if [ ! -b "$PART" ]; then
     exit 1
 fi
 
+# Format the newly-created partition, omitting -L when the caller requested no label.
 if [ "$NO_LABEL" -eq 1 ]; then
     echo "Formatting as exFAT without label..."
     mkfs.exfat "$PART"

@@ -1,0 +1,26 @@
+[Unit]
+Description=USB Exorcist watcher on tty2
+After=systemd-udevd.service
+Conflicts=getty@tty2.service autovt@tty2.service
+
+[Service]
+Type=simple
+User=exorcist
+WorkingDirectory=/home/exorcist
+Environment=TERM=linux
+
+# The service owns tty2 so the formatter can ask confirmation questions there.
+StandardInput=tty
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/tty2
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+
+ExecStart=/bin/sh /home/exorcist/.local/bin/usb-exorcist-watch
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

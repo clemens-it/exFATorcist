@@ -2,43 +2,107 @@
 set -eu
 
 FORMATTER="/usr/local/sbin/exFATorcist"
-TTY="/dev/tty1"
 LOCK="/tmp/usb-exorcist.lock"
+MAX_DEVICE_WAIT=5
 
-for cmd in udevadm flock sed grep sudo; do
+# The watcher expects a real controlling tty, supplied by the systemd unit on tty2.
+for cmd in flock grep sed sleep sudo tty udevadm; do
     if ! command -v "$cmd" >/dev/null 2>&1; then
-        echo "$cmd not found" >&2
+        echo "Error: required command not found: $cmd" >&2
         exit 1
     fi
 done
 
+# Fail early if the service is not attached to TTYPath=/dev/tty2.
+if ! tty >/dev/null 2>&1; then
+    echo "Error: usb-exorcist-watch needs a controlling tty." >&2
+    echo "Start it through the systemd service, not as a detached process." >&2
+    exit 1
+fi
+
+print_banner() {
+    echo
+    echo "USB Exorcist watcher is running on $(tty)."
+    echo "Insert a USB flash drive to format it as exFAT."
+    echo
+    echo "The formatter will ask for confirmation before destroying data."
+    echo "Stop this service with: systemctl stop usb-exorcist-watch.service"
+    echo
+}
+
+extract_devname() {
+    # Match whole-disk udev paths ending in /block/sdX, with or without " (block)".
+    printf "%s\n" "$1" |
+        sed -n 's#.*block/\(sd[a-z][a-z]*\)\([[:space:]].*\)\{0,1\}$#\1#p'
+}
+
+wait_for_block_device() {
+    dev="$1"
+    i=0
+
+    # Udev events can arrive slightly before the block node is usable.
+    while [ ! -b "$dev" ] && [ "$i" -lt "$MAX_DEVICE_WAIT" ]; do
+        sleep 1
+        i=$((i + 1))
+    done
+
+    [ -b "$dev" ]
+}
+
+is_usb_disk() {
+    udevadm info --query=property --name="$1" | grep -q '^ID_BUS=usb$'
+}
+
+wait_for_usb_disk() {
+    dev="$1"
+    i=0
+
+    # Device properties may settle after the add line itself is emitted.
+    while ! is_usb_disk "$dev" && [ "$i" -lt "$MAX_DEVICE_WAIT" ]; do
+        sleep 1
+        i=$((i + 1))
+    done
+
+    is_usb_disk "$dev"
+}
+
 run_formatter() {
     dev="$1"
 
-    {
+    # Serialize formatter runs so udev bursts cannot stack prompts on the tty.
+    (
+        flock -x 9
+
         echo
         echo "USB Exorcist detected: $dev"
         echo
-        sudo "$FORMATTER" "$dev"
+
+        sudo "$FORMATTER" "$dev" < /dev/tty > /dev/tty 2>&1
+
         echo
-        echo "Press Enter to return to watcher..."
-        read -r _
-    } < "$TTY" > "$TTY" 2>&1
+        echo "USB Exorcist watcher is running again."
+        echo "Insert another USB flash drive or stop the service from another tty."
+        echo
+    ) 9>"$LOCK"
 }
 
+print_banner
+
+# Monitor block-device udev events and filter down to whole USB sdX disks.
 udevadm monitor --udev --subsystem-match=block |
 while IFS= read -r line; do
+    # New disks arrive as add events; ignore change/remove chatter.
     case "$line" in
         *" add "*) ;;
         *) continue ;;
     esac
 
-    DEVNAME="$(printf "%s\n" "$line" | sed -n 's#.*block/\(sd[a-z][a-z]*\)\([[:space:]].*\)\{0,1\}$#\1#p')"
-
-    [ -n "${DEVNAME:-}" ] || continue
+    DEVNAME="$(extract_devname "$line")"
+    [ -n "$DEVNAME" ] || continue
 
     DEV="/dev/$DEVNAME"
 
+    # Stay away from the conventional internal disk name and reject non-sdX paths.
     case "$DEV" in
         /dev/sda)
             continue
@@ -50,16 +114,8 @@ while IFS= read -r line; do
             ;;
     esac
 
-    [ -b "$DEV" ] || continue
+    wait_for_block_device "$DEV" || continue
+    wait_for_usb_disk "$DEV" || continue
 
-    if ! udevadm info --query=property --name="$DEV" | grep -q '^ID_BUS=usb$'; then
-        continue
-    fi
-
-    if flock -n "$LOCK" true; then
-        (
-            flock -x 9
-            run_formatter "$DEV"
-        ) 9>"$LOCK"
-    fi
+    run_formatter "$DEV"
 done
