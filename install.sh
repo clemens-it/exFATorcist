@@ -20,7 +20,6 @@ What this installer does:
   - stows the formatter and watcher into /
   - copies the systemd service into /etc/systemd/system
   - validates and installs sudoers/exorcist into /etc/sudoers.d/exorcist
-  - removes legacy tty1 profile/user-service autostart hooks
   - disables the normal login getty on $TTY_NAME
   - enables and starts $SERVICE_NAME
 
@@ -59,9 +58,6 @@ SYSTEM_SERVICE_SRC="$SCRIPT_DIR/systemd/$SERVICE_NAME"
 FORMATTER_DST="/usr/local/sbin/exFATorcist"
 WATCHER_DST="$SERVICE_HOME/.local/bin/usb-exorcist-watch"
 SYSTEM_SERVICE_DST="/etc/systemd/system/$SERVICE_NAME"
-LEGACY_PROFILE_DST="$SERVICE_HOME/.profile"
-LEGACY_FG_WATCHER_DST="$SERVICE_HOME/.local/bin/usb-exorcist-watch-fg"
-LEGACY_USER_SERVICE_DST="$SERVICE_HOME/.config/systemd/user/$SERVICE_NAME"
 
 # Keep dependency errors close to the command that will need them.
 need_cmd() {
@@ -80,7 +76,7 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 # Check the common toolchain up front; service management is checked later.
-for cmd in cat chmod cut getent id install rm sed stow visudo; do
+for cmd in cat chmod cut getent id install rm stow visudo; do
     need_cmd "$cmd"
 done
 
@@ -111,12 +107,10 @@ if ! getent passwd "$SERVICE_USER" >/dev/null 2>&1; then
     useradd --system --create-home --home-dir "$SERVICE_HOME" --shell "$LOGIN_SHELL" "$SERVICE_USER"
 fi
 
-# Cache passwd data used for ownership checks and legacy cleanup.
+# Cache passwd data used for ownership checks.
 USER_HOME="$(getent passwd "$SERVICE_USER" | cut -d: -f6)"
 USER_GID="$(getent passwd "$SERVICE_USER" | cut -d: -f4)"
-USER_UID="$(id -u "$SERVICE_USER")"
 USER_SHELL="$(getent passwd "$SERVICE_USER" | cut -d: -f7)"
-USER_RUNTIME_DIR="/run/user/$USER_UID"
 
 # The stow package hardcodes /home/exorcist, so do not silently install elsewhere.
 if [ "$USER_HOME" != "$SERVICE_HOME" ]; then
@@ -151,54 +145,15 @@ chmod 0755 "$FORMATTER_DST" "$WATCHER_DST"
 # System units should be real root-owned files, not symlinks to a checkout.
 install -o root -g root -m 0644 "$SYSTEM_SERVICE_SRC" "$SYSTEM_SERVICE_DST"
 
-# Temporary files keep sudoers/profile cleanup atomic enough for installer use.
+# Temporary files keep sudoers updates atomic enough for installer use.
 TMP_SUDOERS="${TMPDIR:-/tmp}/exorcist-sudoers.$$"
-TMP_PROFILE="${TMPDIR:-/tmp}/exorcist-profile.$$"
-trap 'rm -f "$TMP_SUDOERS" "$TMP_PROFILE"' EXIT HUP INT TERM
+trap 'rm -f "$TMP_SUDOERS"' EXIT HUP INT TERM
 
 # Validate sudoers before and after installing the root-owned fragment.
 install -o root -g root -m 0440 "$SUDOERS_SRC" "$TMP_SUDOERS"
 visudo -cf "$TMP_SUDOERS" >/dev/null
 install -o root -g root -m 0440 "$SUDOERS_SRC" "$SUDOERS_DST"
 visudo -cf "$SUDOERS_DST" >/dev/null
-
-remove_legacy_profile_autostart() {
-    # Delete only the old managed block and leave user-authored profile content alone.
-    if [ ! -f "$LEGACY_PROFILE_DST" ]; then
-        return 0
-    fi
-
-    sed '/^# BEGIN exFATorcist tty1 autostart$/,/^# END exFATorcist tty1 autostart$/d' \
-        "$LEGACY_PROFILE_DST" > "$TMP_PROFILE"
-    install -o "$SERVICE_USER" -g "$USER_GID" -m 0644 "$TMP_PROFILE" "$LEGACY_PROFILE_DST"
-}
-
-run_legacy_user_systemctl() {
-    # Best-effort cleanup for the previous systemd user-service design.
-    if ! command -v runuser >/dev/null 2>&1 || [ ! -d "$USER_RUNTIME_DIR" ]; then
-        return 1
-    fi
-
-    runuser -u "$SERVICE_USER" -- env \
-        XDG_RUNTIME_DIR="$USER_RUNTIME_DIR" \
-        DBUS_SESSION_BUS_ADDRESS="unix:path=$USER_RUNTIME_DIR/bus" \
-        systemctl --user "$@"
-}
-
-remove_legacy_user_service() {
-    # Old installs used a user service, a foreground wrapper, and linger.
-    if command -v systemctl >/dev/null 2>&1; then
-        systemctl start "user@$USER_UID.service" >/dev/null 2>&1 || true
-        run_legacy_user_systemctl disable --now "$SERVICE_NAME" >/dev/null 2>&1 || true
-        run_legacy_user_systemctl daemon-reload >/dev/null 2>&1 || true
-    fi
-
-    if command -v loginctl >/dev/null 2>&1; then
-        loginctl disable-linger "$SERVICE_USER" >/dev/null 2>&1 || true
-    fi
-
-    rm -f "$LEGACY_FG_WATCHER_DST" "$LEGACY_USER_SERVICE_DST"
-}
 
 reserve_tty() {
     # Mask both common getty instance names so tty2 belongs to this service.
@@ -222,10 +177,6 @@ enable_system_service() {
     systemctl enable "$SERVICE_NAME"
     systemctl restart "$SERVICE_NAME"
 }
-
-# Remove leftovers from earlier autostart concepts before activating the new one.
-remove_legacy_profile_autostart
-remove_legacy_user_service
 
 if [ "$ENABLE_SERVICE" -eq 1 ]; then
     enable_system_service

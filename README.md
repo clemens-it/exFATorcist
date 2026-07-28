@@ -39,9 +39,9 @@ directories, runs:
 stow -d stow -t / --restow exFATorcist
 ```
 
-Then it validates and installs the sudoers fragment, removes leftovers from the
-older tty1/profile setup, masks `getty@tty2.service` and `autovt@tty2.service`,
-and enables `usb-exorcist-watch.service`.
+Then it validates and installs the sudoers fragment, masks
+`getty@tty2.service` and `autovt@tty2.service`, and enables
+`usb-exorcist-watch.service`.
 
 The service runs as `exorcist`, owns `/dev/tty2`, and starts the watcher there.
 When a USB flash drive appears, the watcher launches `exFATorcist`; the
@@ -61,9 +61,9 @@ Run the uninstaller as root:
 sudo sh uninstall.sh
 ```
 
-This stops and disables `usb-exorcist-watch.service`, removes legacy tty1
-profile/user-service hooks if present, removes `/etc/sudoers.d/exorcist`,
-unstows the package from `/`, and unmasks/restores the normal tty2 login getty.
+This stops and disables `usb-exorcist-watch.service`, removes
+`/etc/sudoers.d/exorcist`, unstows the package from `/`, and unmasks/restores
+the normal tty2 login getty.
 
 To also remove the dedicated user and its home directory:
 

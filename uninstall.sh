@@ -17,7 +17,6 @@ Uninstalls exFATorcist from this machine.
 
 What this uninstaller does:
   - disables and stops $SERVICE_NAME
-  - removes legacy tty1 profile/user-service autostart hooks if present
   - removes /etc/sudoers.d/exorcist
   - unstows the exFATorcist package from /
   - unmasks the normal login getty on $TTY_NAME
@@ -52,9 +51,6 @@ SCRIPT_DIR="$(CDPATH= cd "$(dirname "$0")" && pwd)"
 STOW_DIR="$SCRIPT_DIR/stow"
 SUDOERS_DST="/etc/sudoers.d/exorcist"
 SYSTEM_SERVICE_DST="/etc/systemd/system/$SERVICE_NAME"
-LEGACY_PROFILE_DST="$SERVICE_HOME/.profile"
-LEGACY_FG_WATCHER_DST="$SERVICE_HOME/.local/bin/usb-exorcist-watch-fg"
-LEGACY_USER_SERVICE_DST="$SERVICE_HOME/.config/systemd/user/$SERVICE_NAME"
 
 # Keep dependency failures explicit and early.
 need_cmd() {
@@ -73,16 +69,12 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 # These are the base commands needed before optional user deletion.
-for cmd in cut getent id install rm sed stow; do
+for cmd in cat getent id rm stow; do
     need_cmd "$cmd"
 done
 
-# Reused when removing the legacy managed .profile block.
-TMP_PROFILE="${TMPDIR:-/tmp}/exorcist-profile-uninstall.$$"
-trap 'rm -f "$TMP_PROFILE"' EXIT HUP INT TERM
-
 disable_system_service() {
-    # Stop the tty2 watcher before removing its unit symlink.
+    # Stop the tty2 watcher before removing its copied unit file.
     if ! command -v systemctl >/dev/null 2>&1; then
         return 0
     fi
@@ -106,55 +98,7 @@ release_tty() {
     }
 }
 
-remove_legacy_profile_autostart() {
-    # Remove only the old block managed by install.sh, preserving local edits.
-    if [ ! -f "$LEGACY_PROFILE_DST" ]; then
-        return 0
-    fi
-
-    sed '/^# BEGIN exFATorcist tty1 autostart$/,/^# END exFATorcist tty1 autostart$/d' \
-        "$LEGACY_PROFILE_DST" > "$TMP_PROFILE"
-    install -o "$SERVICE_USER" -g "$USER_GID" -m 0644 "$TMP_PROFILE" "$LEGACY_PROFILE_DST"
-}
-
-run_legacy_user_systemctl() {
-    # Best-effort cleanup for the previous systemd user-service design.
-    if ! command -v runuser >/dev/null 2>&1 || [ ! -d "$USER_RUNTIME_DIR" ]; then
-        return 1
-    fi
-
-    runuser -u "$SERVICE_USER" -- env \
-        XDG_RUNTIME_DIR="$USER_RUNTIME_DIR" \
-        DBUS_SESSION_BUS_ADDRESS="unix:path=$USER_RUNTIME_DIR/bus" \
-        systemctl --user "$@"
-}
-
-remove_legacy_user_service() {
-    # Old installs used a user service, a foreground wrapper, and linger.
-    if command -v systemctl >/dev/null 2>&1; then
-        systemctl start "user@$USER_UID.service" >/dev/null 2>&1 || true
-        run_legacy_user_systemctl disable --now "$SERVICE_NAME" >/dev/null 2>&1 || true
-        run_legacy_user_systemctl daemon-reload >/dev/null 2>&1 || true
-    fi
-
-    if command -v loginctl >/dev/null 2>&1; then
-        loginctl disable-linger "$SERVICE_USER" >/dev/null 2>&1 || true
-    fi
-
-    rm -f "$LEGACY_FG_WATCHER_DST" "$LEGACY_USER_SERVICE_DST"
-}
-
 disable_system_service
-
-# User-specific cleanup is skipped if the dedicated account is already gone.
-if getent passwd "$SERVICE_USER" >/dev/null 2>&1; then
-    USER_GID="$(getent passwd "$SERVICE_USER" | cut -d: -f4)"
-    USER_UID="$(id -u "$SERVICE_USER")"
-    USER_RUNTIME_DIR="/run/user/$USER_UID"
-
-    remove_legacy_profile_autostart
-    remove_legacy_user_service
-fi
 
 # Remove installed root-owned files that are copied rather than stowed.
 rm -f "$SUDOERS_DST" "$SYSTEM_SERVICE_DST"
