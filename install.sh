@@ -4,27 +4,30 @@ set -eu
 PACKAGE="exFATorcist"
 SERVICE_USER="exorcist"
 SERVICE_HOME="/home/$SERVICE_USER"
-SERVICE_NAME="usb-exorcist-watch.service"
-TTY_NAME="tty2"
-TTY_GETTY_UNITS="getty@$TTY_NAME.service autovt@$TTY_NAME.service"
-ENABLE_SERVICE=1
+WATCH_SERVICE_NAME="usb-exorcist-watch.service"
+WATCH_TTY_NAME="tty2"
+DIAGNOSTIC_SERVICE_NAME="kernel-diagnostics.service"
+DIAGNOSTIC_TTY_NAME="tty8"
+ENABLE_SERVICES=1
 
 usage() {
     cat <<EOF >&2
 Usage: sudo sh $0 [--no-enable]
 
-Installs exFATorcist as a system service on /dev/$TTY_NAME.
+Installs exFATorcist on /dev/$WATCH_TTY_NAME with kernel diagnostics on
+/dev/$DIAGNOSTIC_TTY_NAME.
 
 What this installer does:
   - creates the $SERVICE_USER user if it does not exist
   - stows the formatter and watcher into /
-  - copies the systemd service into /etc/systemd/system
+  - copies both systemd services into /etc/systemd/system
   - validates and installs sudoers/exorcist into /etc/sudoers.d/exorcist
-  - disables the normal login getty on $TTY_NAME
-  - enables and starts $SERVICE_NAME
+  - suppresses kernel messages below error priority on normal consoles
+  - reserves $WATCH_TTY_NAME for the watcher and $DIAGNOSTIC_TTY_NAME for diagnostics
+  - enables and starts both services
 
 Options:
-  --no-enable   Install files only; do not reserve $TTY_NAME or start the service
+  --no-enable   Install files only; do not reserve TTYs or start services
   -h, --help    Show this help
 EOF
 }
@@ -33,7 +36,7 @@ EOF
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --no-enable)
-            ENABLE_SERVICE=0
+            ENABLE_SERVICES=0
             ;;
         -h|--help)
             usage
@@ -54,10 +57,16 @@ STOW_DIR="$SCRIPT_DIR/stow"
 STOW_PACKAGE="$STOW_DIR/$PACKAGE"
 SUDOERS_SRC="$SCRIPT_DIR/sudoers/exorcist"
 SUDOERS_DST="/etc/sudoers.d/exorcist"
-SYSTEM_SERVICE_SRC="$SCRIPT_DIR/systemd/$SERVICE_NAME"
+WATCH_SERVICE_SRC="$SCRIPT_DIR/systemd/$WATCH_SERVICE_NAME"
+DIAGNOSTIC_SERVICE_SRC="$SCRIPT_DIR/systemd/$DIAGNOSTIC_SERVICE_NAME"
 FORMATTER_DST="/usr/local/sbin/exFATorcist"
 WATCHER_DST="$SERVICE_HOME/.local/bin/usb-exorcist-watch"
-SYSTEM_SERVICE_DST="/etc/systemd/system/$SERVICE_NAME"
+WATCH_SERVICE_DST="/etc/systemd/system/$WATCH_SERVICE_NAME"
+DIAGNOSTIC_SERVICE_DST="/etc/systemd/system/$DIAGNOSTIC_SERVICE_NAME"
+SYSCTL_SRC="$SCRIPT_DIR/sysctl/90-exFATorcist-console.conf"
+SYSCTL_DST="/etc/sysctl.d/90-exFATorcist-console.conf"
+STATE_DIR="/var/lib/exFATorcist"
+PRINTK_STATE="$STATE_DIR/kernel.printk"
 
 # Keep dependency errors close to the command that will need them.
 need_cmd() {
@@ -91,8 +100,18 @@ if [ ! -f "$SUDOERS_SRC" ]; then
     exit 1
 fi
 
-if [ ! -f "$SYSTEM_SERVICE_SRC" ]; then
-    echo "Error: systemd service source not found: $SYSTEM_SERVICE_SRC" >&2
+if [ ! -f "$WATCH_SERVICE_SRC" ]; then
+    echo "Error: systemd service source not found: $WATCH_SERVICE_SRC" >&2
+    exit 1
+fi
+
+if [ ! -f "$DIAGNOSTIC_SERVICE_SRC" ]; then
+    echo "Error: systemd service source not found: $DIAGNOSTIC_SERVICE_SRC" >&2
+    exit 1
+fi
+
+if [ ! -f "$SYSCTL_SRC" ]; then
+    echo "Error: sysctl source not found: $SYSCTL_SRC" >&2
     exit 1
 fi
 
@@ -134,7 +153,9 @@ install -d -o "$SERVICE_USER" -g "$USER_GID" -m 0755 \
 install -d -o root -g root -m 0755 \
     /usr/local/sbin \
     /etc/sudoers.d \
-    /etc/systemd/system
+    /etc/systemd/system \
+    /etc/sysctl.d \
+    "$STATE_DIR"
 
 # Deploy the package symlinks into their final absolute locations.
 stow -d "$STOW_DIR" -t / --restow "$PACKAGE"
@@ -142,8 +163,24 @@ stow -d "$STOW_DIR" -t / --restow "$PACKAGE"
 # Make executable targets executable even when the checkout loses mode bits.
 chmod 0755 "$FORMATTER_DST" "$WATCHER_DST"
 
-# System units should be real root-owned files, not symlinks to a checkout.
-install -o root -g root -m 0644 "$SYSTEM_SERVICE_SRC" "$SYSTEM_SERVICE_DST"
+# Root-managed configuration should remain available independently of the checkout.
+install -o root -g root -m 0644 "$WATCH_SERVICE_SRC" "$WATCH_SERVICE_DST"
+install -o root -g root -m 0644 "$DIAGNOSTIC_SERVICE_SRC" "$DIAGNOSTIC_SERVICE_DST"
+
+# Preserve the host's live console policy once so uninstall can restore it.
+if [ ! -f "$PRINTK_STATE" ]; then
+    if [ ! -r /proc/sys/kernel/printk ]; then
+        echo "Error: cannot read the current kernel.printk setting." >&2
+        exit 1
+    fi
+
+    PRINTK_CURRENT="$(cat /proc/sys/kernel/printk)"
+    printf '%s\n' "$PRINTK_CURRENT" > "$PRINTK_STATE"
+    chmod 0600 "$PRINTK_STATE"
+fi
+
+# systemd-sysctl loads this policy at boot; normal installs also apply it below.
+install -o root -g root -m 0644 "$SYSCTL_SRC" "$SYSCTL_DST"
 
 # Temporary files keep sudoers updates atomic enough for installer use.
 TMP_SUDOERS="${TMPDIR:-/tmp}/exorcist-sudoers.$$"
@@ -156,33 +193,38 @@ install -o root -g root -m 0440 "$SUDOERS_SRC" "$SUDOERS_DST"
 visudo -cf "$SUDOERS_DST" >/dev/null
 
 reserve_tty() {
-    # Mask both common getty instance names so tty2 belongs to this service.
+    # Stop and mask both common getty names for the requested virtual terminal.
     need_cmd systemctl
 
-    for unit in $TTY_GETTY_UNITS; do
+    RESERVED_TTY="$1"
+
+    for unit in "getty@$RESERVED_TTY.service" "autovt@$RESERVED_TTY.service"; do
         systemctl stop "$unit" >/dev/null 2>&1 || true
-        systemctl disable "$unit" >/dev/null 2>&1 || true
         systemctl mask "$unit" >/dev/null 2>&1 || {
             echo "Warning: could not mask $unit." >&2
         }
     done
 }
 
-enable_system_service() {
-    # Reload units after stowing, reserve tty2, then start the watcher service.
+enable_system_services() {
+    # Reserve both TTYs, apply the console policy, and start their services.
     need_cmd systemctl
+    need_cmd journalctl
+    need_cmd sysctl
 
     systemctl daemon-reload
-    reserve_tty
-    systemctl enable "$SERVICE_NAME"
-    systemctl restart "$SERVICE_NAME"
+    reserve_tty "$WATCH_TTY_NAME"
+    reserve_tty "$DIAGNOSTIC_TTY_NAME"
+    sysctl -p "$SYSCTL_DST" >/dev/null
+    systemctl enable "$WATCH_SERVICE_NAME" "$DIAGNOSTIC_SERVICE_NAME"
+    systemctl restart "$WATCH_SERVICE_NAME" "$DIAGNOSTIC_SERVICE_NAME"
 }
 
-if [ "$ENABLE_SERVICE" -eq 1 ]; then
-    enable_system_service
+if [ "$ENABLE_SERVICES" -eq 1 ]; then
+    enable_system_services
 else
-    echo "Installed files only; $SERVICE_NAME was not enabled." >&2
-    echo "Enable later with: sudo systemctl enable --now $SERVICE_NAME" >&2
+    echo "Installed files only; services and TTY reservations were not activated." >&2
+    echo "Activate later by rerunning: sudo sh $0" >&2
 fi
 
 echo "Installed $PACKAGE."

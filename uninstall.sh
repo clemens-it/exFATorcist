@@ -3,10 +3,10 @@ set -eu
 
 PACKAGE="exFATorcist"
 SERVICE_USER="exorcist"
-SERVICE_HOME="/home/$SERVICE_USER"
-SERVICE_NAME="usb-exorcist-watch.service"
-TTY_NAME="tty2"
-TTY_GETTY_UNITS="getty@$TTY_NAME.service autovt@$TTY_NAME.service"
+WATCH_SERVICE_NAME="usb-exorcist-watch.service"
+WATCH_TTY_NAME="tty2"
+DIAGNOSTIC_SERVICE_NAME="kernel-diagnostics.service"
+DIAGNOSTIC_TTY_NAME="tty8"
 REMOVE_USER=0
 
 usage() {
@@ -16,10 +16,11 @@ Usage: sudo sh $0 [--remove-user]
 Uninstalls exFATorcist from this machine.
 
 What this uninstaller does:
-  - disables and stops $SERVICE_NAME
-  - removes /etc/sudoers.d/exorcist
+  - disables and stops both system services
+  - removes the installed sudoers, systemd, and sysctl files
   - unstows the exFATorcist package from /
-  - unmasks the normal login getty on $TTY_NAME
+  - restores the previous live kernel console policy
+  - releases $WATCH_TTY_NAME and $DIAGNOSTIC_TTY_NAME
 
 Options:
   --remove-user  Also remove the $SERVICE_USER user and its home directory
@@ -50,7 +51,11 @@ done
 SCRIPT_DIR="$(CDPATH= cd "$(dirname "$0")" && pwd)"
 STOW_DIR="$SCRIPT_DIR/stow"
 SUDOERS_DST="/etc/sudoers.d/exorcist"
-SYSTEM_SERVICE_DST="/etc/systemd/system/$SERVICE_NAME"
+WATCH_SERVICE_DST="/etc/systemd/system/$WATCH_SERVICE_NAME"
+DIAGNOSTIC_SERVICE_DST="/etc/systemd/system/$DIAGNOSTIC_SERVICE_NAME"
+SYSCTL_DST="/etc/sysctl.d/90-exFATorcist-console.conf"
+STATE_DIR="/var/lib/exFATorcist"
+PRINTK_STATE="$STATE_DIR/kernel.printk"
 
 # Keep dependency failures explicit and early.
 need_cmd() {
@@ -69,39 +74,69 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 # These are the base commands needed before optional user deletion.
-for cmd in cat getent id rm stow; do
+for cmd in cat getent id rm rmdir stow; do
     need_cmd "$cmd"
 done
 
-disable_system_service() {
-    # Stop the tty2 watcher before removing its copied unit file.
+disable_system_services() {
+    # Stop both TTY owners before removing their copied unit files.
     if ! command -v systemctl >/dev/null 2>&1; then
         return 0
     fi
 
-    systemctl disable --now "$SERVICE_NAME" >/dev/null 2>&1 || true
+    systemctl disable --now \
+        "$WATCH_SERVICE_NAME" \
+        "$DIAGNOSTIC_SERVICE_NAME" >/dev/null 2>&1 || true
 }
 
 release_tty() {
-    # Undo the tty reservation so a normal login can use tty2 again.
+    # Undo one TTY reservation and optionally restore a permanent login getty.
     if ! command -v systemctl >/dev/null 2>&1; then
         return 0
     fi
 
-    for unit in $TTY_GETTY_UNITS; do
+    RELEASED_TTY="$1"
+    RESTORE_GETTY="$2"
+
+    for unit in "getty@$RELEASED_TTY.service" "autovt@$RELEASED_TTY.service"; do
         systemctl unmask "$unit" >/dev/null 2>&1 || true
     done
 
-    systemctl daemon-reload
-    systemctl enable --now "getty@$TTY_NAME.service" >/dev/null 2>&1 || {
-        echo "Warning: could not restore getty@$TTY_NAME.service." >&2
-    }
+    if [ "$RESTORE_GETTY" -eq 1 ]; then
+        systemctl enable --now "getty@$RELEASED_TTY.service" >/dev/null 2>&1 || {
+            echo "Warning: could not restore getty@$RELEASED_TTY.service." >&2
+        }
+    fi
 }
 
-disable_system_service
+restore_console_policy() {
+    # Put the live printk threshold back to the value saved during installation.
+    if [ ! -f "$PRINTK_STATE" ]; then
+        return 0
+    fi
+
+    if ! command -v sysctl >/dev/null 2>&1; then
+        echo "Warning: sysctl is unavailable; $PRINTK_STATE was kept." >&2
+        return 0
+    fi
+
+    SAVED_PRINTK="$(cat "$PRINTK_STATE")"
+    if sysctl -w "kernel.printk=$SAVED_PRINTK" >/dev/null; then
+        rm -f "$PRINTK_STATE"
+        rmdir "$STATE_DIR" >/dev/null 2>&1 || true
+    else
+        echo "Warning: kernel.printk could not be restored; $PRINTK_STATE was kept." >&2
+    fi
+}
+
+disable_system_services
 
 # Remove installed root-owned files that are copied rather than stowed.
-rm -f "$SUDOERS_DST" "$SYSTEM_SERVICE_DST"
+rm -f \
+    "$SUDOERS_DST" \
+    "$WATCH_SERVICE_DST" \
+    "$DIAGNOSTIC_SERVICE_DST" \
+    "$SYSCTL_DST"
 
 # Delete the package symlinks that were previously created under /.
 if [ -d "$STOW_DIR/$PACKAGE" ]; then
@@ -110,7 +145,14 @@ if [ -d "$STOW_DIR/$PACKAGE" ]; then
     }
 fi
 
-release_tty
+# Reload unit discovery before returning both virtual terminals to normal use.
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload
+fi
+
+release_tty "$WATCH_TTY_NAME" 1
+release_tty "$DIAGNOSTIC_TTY_NAME" 0
+restore_console_policy
 
 # Account removal is opt-in because it deletes the user's home directory.
 if [ "$REMOVE_USER" -eq 1 ] && getent passwd "$SERVICE_USER" >/dev/null 2>&1; then

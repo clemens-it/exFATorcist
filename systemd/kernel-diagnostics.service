@@ -1,0 +1,29 @@
+[Unit]
+Description=Kernel diagnostic console on tty8
+After=systemd-journald.service
+Conflicts=getty@tty8.service autovt@tty8.service
+
+[Service]
+Type=simple
+Environment=TERM=linux
+Environment=SYSTEMD_COLORS=1
+
+# Root can read the complete kernel journal without adding privileges to exorcist.
+User=root
+
+# tty8 is output-only: journalctl follows every current-boot kernel message.
+StandardInput=null
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/tty8
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+
+# Include recent context before following new messages in real time.
+ExecStart=/usr/bin/journalctl --dmesg --boot --follow --lines=50 --no-pager --output=short-monotonic
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
