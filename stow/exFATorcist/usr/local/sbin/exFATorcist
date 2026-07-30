@@ -4,6 +4,7 @@ set -eu
 DEFAULT_LABEL="USB-Stick"
 ASK_LABEL=1
 MAX_LABEL_LEN=11
+ABORT_EXIT_STATUS=2
 
 # Keep the dependency list visible; this script should fail before touching a disk.
 REQUIRED_COMMANDS="basename cat cut tr wc id lsblk umount blkdiscard wipefs dd parted partprobe mkfs.exfat sleep"
@@ -168,7 +169,9 @@ read -r answer
 
 if [ "$answer" != "YES" ]; then
     echo "Aborted."
-    exit 1
+
+    # Let interactive callers distinguish cancellation from an operational error.
+    exit "$ABORT_EXIT_STATUS"
 fi
 
 # Unmount any existing partitions so wipe/partition/format operations can proceed.

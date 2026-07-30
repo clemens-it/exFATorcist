@@ -2,6 +2,7 @@
 set -eu
 
 FORMATTER="/usr/local/sbin/exFATorcist"
+FORMATTER_ABORT_STATUS=2
 LOCK="/tmp/usb-exorcist.lock"
 MAX_DEVICE_WAIT=5
 
@@ -77,7 +78,28 @@ run_formatter() {
         echo "USB Exorcist detected: $dev"
         echo
 
-        sudo "$FORMATTER" "$dev" < /dev/tty > /dev/tty 2>&1
+        # A formatter result belongs to this device and must not stop the event loop.
+        # note: the following if places the command in a tested condition, where set -e does not terminate the shell.
+        formatter_status=0
+        if sudo "$FORMATTER" "$dev" < /dev/tty > /dev/tty 2>&1; then
+            :
+        else
+            formatter_status=$?
+        fi
+
+        case "$formatter_status" in
+            0)
+                ;;
+            "$FORMATTER_ABORT_STATUS")
+                echo
+                echo "Formatting request cancelled; no changes were made."
+                ;;
+            *)
+                echo
+                echo "Formatter failed with exit status $formatter_status." >&2
+                echo "The watcher will remain active for the next USB flash drive." >&2
+                ;;
+        esac
 
         echo
         echo "USB Exorcist watcher is running again."

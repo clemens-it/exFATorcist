@@ -49,6 +49,8 @@ loglevel policy, reserves tty2 and tty8, and enables both system services.
 The service runs as `exorcist`, owns `/dev/tty2`, and starts the watcher there.
 When a USB flash drive appears, the watcher launches `exFATorcist`; the
 formatter still asks for explicit confirmation before destroying data.
+Cancelling the confirmation or encountering a per-device formatter error
+returns the watcher to its waiting state for the next USB flash drive.
 
 `kernel.printk = 4 4 1 4` keeps informational, notice, and warning messages
 off normal kernel consoles while leaving errors and more severe events visible.
