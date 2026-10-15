@@ -24,7 +24,7 @@ What this script does:
   - unmounts existing partitions on the target device
   - uses blkdiscard if supported, otherwise wipefs plus zeroing the first 16 MiB
   - creates a new MBR/msdos partition table
-  - creates one partition spanning the device
+  - creates one Microsoft-compatible partition spanning the device
   - formats that partition as exFAT
 
 Label handling:
@@ -194,10 +194,13 @@ else
     dd if=/dev/zero of="$DEV" bs=1M count=16 status=progress conv=fsync
 fi
 
-# Build a simple Windows-compatible MBR layout with one aligned primary partition.
+# Build a Windows-compatible MBR layout with one aligned primary partition.
 echo "Creating MBR partition table..."
 parted -s "$DEV" mklabel msdos
-parted -s -a optimal "$DEV" mkpart primary 1MiB 100%
+
+# The ntfs hint makes Parted write MBR type 0x07 (HPFS/NTFS/exFAT). It does not
+# create a filesystem; mkfs.exfat below supplies the actual exFAT filesystem.
+parted -s -a optimal "$DEV" mkpart primary ntfs 1MiB 100%
 partprobe "$DEV"
 
 PART="${DEV}1"

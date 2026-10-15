@@ -51,6 +51,8 @@ When a USB flash drive appears, the watcher launches `exFATorcist`; the
 formatter still asks for explicit confirmation before destroying data.
 Cancelling the confirmation or encountering a per-device formatter error
 returns the watcher to its waiting state for the next USB flash drive.
+The resulting MBR partition uses type `0x07` (HPFS/NTFS/exFAT), allowing the
+exFAT filesystem to be recognized consistently by macOS and Windows.
 
 `kernel.printk = 4 4 1 4` keeps informational, notice, and warning messages
 off normal kernel consoles while leaving errors and more severe events visible.
